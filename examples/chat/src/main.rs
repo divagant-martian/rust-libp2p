@@ -22,6 +22,7 @@
 
 use futures::stream::StreamExt;
 use libp2p::{gossipsub, mdns, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux};
+use rand::RngCore;
 use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
@@ -55,6 +56,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Set a custom gossipsub configuration
             let gossipsub_config = gossipsub::ConfigBuilder::default()
+                .max_transmit_size(1_000_000)
                 .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
                 .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
                 .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
@@ -86,10 +88,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
     println!("Enter messages via STDIN and they will be sent to connected peers using Gossipsub");
+    let mut timer = tokio::time::interval(std::time::Duration::from_millis(10));
+    let mut msg = 0u64;
+    let mut rng = rand::thread_rng();
 
     // Kick it off
     loop {
         select! {
+           _ = timer.tick() => {
+               let mut m = [0u8; 100_000];
+               rng.fill_bytes(&mut m);
+
+               if let Err(e) = swarm
+                   .behaviour_mut().gossipsub
+                   .publish(topic.clone(), m) {
+                   match e {
+                       gossipsub::PublishError::InsufficientPeers => {
+                           println!("no peers")
+                       }
+                       _ => {
+                           println!("Publish error: {e:?}");
+                           return Ok(());
+                       }
+                   }
+               } else {
+                   msg += 1;
+               }
+           }
             Ok(Some(line)) = stdin.next_line() => {
                 if let Err(e) = swarm
                     .behaviour_mut().gossipsub
@@ -118,10 +143,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         "Got message: '{}' with id: {id} from peer: {peer_id}",
                         String::from_utf8_lossy(&message.data),
                     ),
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::SendQueueSizeUpdate { pow, peer_id })) => println!(
+                        "Message queue capacity: 2^{pow}' {peer_id}"
+                    ),
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
                 }
-                _ => {}
+                swarm_ev => {
+                    println!("{swarm_ev:?}")
+                }
             }
         }
     }

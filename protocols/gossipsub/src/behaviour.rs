@@ -144,7 +144,13 @@ pub enum Event {
         topic: TopicHash,
     },
     /// A peer that does not support gossipsub has connected.
-    GossipsubNotSupported { peer_id: PeerId },
+    GossipsubNotSupported {
+        peer_id: PeerId,
+    },
+    SendQueueSizeUpdate {
+        pow: usize,
+        peer_id: PeerId,
+    },
 }
 
 /// A data structure for storing configuration for publishing messages. See [`MessageAuthenticity`]
@@ -3340,6 +3346,13 @@ where
         handler_event: THandlerOutEvent<Self>,
     ) {
         match handler_event {
+            HandlerEvent::SendQueueSizeUpdate(pow) => {
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(Event::SendQueueSizeUpdate {
+                        pow,
+                        peer_id: propagation_source,
+                    }));
+            }
             HandlerEvent::PeerKind(kind) => {
                 // We have identified the protocol this peer is using
 

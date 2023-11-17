@@ -58,6 +58,8 @@ pub enum HandlerEvent {
     /// An inbound or outbound substream has been established with the peer and this informs over
     /// which protocol. This message only occurs once per connection.
     PeerKind(PeerKind),
+    /// Report a send queue len update.
+    SendQueueSizeUpdate(usize),
 }
 
 /// A message sent from the behaviour to the handler.
@@ -98,6 +100,11 @@ pub struct EnabledHandler {
 
     /// Queue of values that we want to send to the remote.
     send_queue: SmallVec<[proto::RPC; 16]>,
+
+    last_send_queue_pow: usize,
+
+    /// whether to report a send_queue len.
+    report_change: bool,
 
     /// Flag indicating that an outbound substream is being established to prevent duplicate
     /// requests.
@@ -173,6 +180,8 @@ impl Handler {
             outbound_substream_attempts: 0,
             inbound_substream_attempts: 0,
             send_queue: SmallVec::new(),
+            last_send_queue_pow: 0,
+            report_change: false,
             peer_kind: None,
             peer_kind_sent: false,
             last_io_activity: Instant::now(),
@@ -236,6 +245,13 @@ impl EnabledHandler {
                     HandlerEvent::PeerKind(peer_kind.clone()),
                 ));
             }
+        }
+
+        if self.report_change {
+            self.report_change = false;
+            return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(
+                HandlerEvent::SendQueueSizeUpdate(self.last_send_queue_pow),
+            ));
         }
 
         // determine if we need to create the outbound stream
@@ -415,7 +431,14 @@ impl ConnectionHandler for Handler {
     fn on_behaviour_event(&mut self, message: HandlerIn) {
         match self {
             Handler::Enabled(handler) => match message {
-                HandlerIn::Message(m) => handler.send_queue.push(m),
+                HandlerIn::Message(m) => {
+                    handler.send_queue.push(m);
+                    let pow = handler.send_queue.len().ilog2() as usize /* hacky */;
+                    if pow != handler.last_send_queue_pow {
+                        handler.last_send_queue_pow = pow;
+                        handler.report_change = true;
+                    }
+                }
                 HandlerIn::JoinedMesh => {
                     handler.in_mesh = true;
                 }
